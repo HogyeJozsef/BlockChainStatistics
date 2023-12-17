@@ -12,6 +12,7 @@
     "alchemy-sdk": "^3.1.0",
     "axios": "^1.6.2",
     "mysql": "^2.18.1",
+    "python-shell": "^5.0.0",
     "web3": "^4.3.0"
   },
   "devDependencies": {

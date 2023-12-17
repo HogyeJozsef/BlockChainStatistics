@@ -1,31 +1,25 @@
 require('@babel/register');
-const mysql = require('mysql');
+const fs = require('fs');
 const alchemy = require('./alchemy.js');
+let { PythonShell } = require('python-shell');
+
+var printData = true;
+var pythonPath = ''; // C:\\Teljes\\Elérési\\Útvonal\\python.exe
+var scriptPath = ''; // C:\\path\\to\\your\\python_script_directory
 
 const contract = "0xF19308F923582A6f7c465e5CE7a9Dc1BEC6665B1";
-const all_transactions = [];
-
-let insert_transactions = "INSERT INTO transactions (BlockHexadecimal, BlockDecimal, TransactionHash) VALUES ?;";
-
-const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'titanx',
-});
+var i = 0;
+const dataToWrite = [];
 
 async function AlchemyTransfer() {
 
-    const data = await alchemy.core
-        .getAssetTransfers({
-            fromBlock: "0x0",
-            toBlock: "latest",
-            withMetadata: false,
-            excludeZeroValue: true,
-            maxCount: "0x3e8",
-            fromAddress: contract,
-            category: ["internal"]
-        });
+    console.log('Adatok lekérése...')
+
+    const data = await alchemy.core.getAssetTransfers({
+        fromBlock: "0x0",
+        toAddress: contract,
+        category: ["external"]
+    });
 
     return data;
 };
@@ -33,129 +27,132 @@ async function AlchemyTransfer() {
 async function AlchemyTransferPage(pageKey) {
 
     if (pageKey !== undefined) {
-        
-        console.log('-------------')
-        console.log("pageKey: " + pageKey)
 
-        const data = await alchemy.core
-            .getAssetTransfers({
-                fromBlock: "0x0",
-                toBlock: "latest",
-                withMetadata: false,
-                excludeZeroValue: true,
-                maxCount: "0x3e8",
-                pageKey: pageKey,
-                fromAddress: contract,
-                category: ["internal"]
-            });
+        if (printData) {
+
+            console.log('-----------------------------------------------')
+            console.log("pageKey: " + pageKey)
+        }
+
+        const data = await alchemy.core.getAssetTransfers({
+            fromBlock: "0x0",
+            pageKey: pageKey,
+            toAddress: contract,
+            category: ["external"]
+        });
 
         await UploadDataPage(data);
 
-    } 
+        return;
+    }
 
     return;
 }
-
-function insertDatas(item, callback) {
-
-    console.log('Csatlakozás az adatbázishoz...')
-
-    db.connect((err) => {
-        if (err) {
-            callback(err);
-        }
-        console.log('Csatlakozva...');
-    });
-
-    console.log('Adatok beszúrása az adatbázisba...')
-
-    db.query(insert_transactions, [all_transactions.map(item => [item.BlockHexadecimal, item.BlockDecimal, item.TransactionHash])], (err, rows) => {
-
-        if (err) {
-            callback(err);
-        } else {
-            console.log('Adatok beszúrása sikeresen megtörtént! Beszúrt sorok: ' + rows['affectedRows']);
-            callback();
-        }
-
-    });
-};
 
 console.log('Adatok lekérése a blokkláncról...')
 
 async function UploadDataPage(result) {
 
+    DataWrite(result, async function () {
+
+        if (result['pageKey']) {
+
+            let param;
+
+            do {
+
+                param = await AlchemyTransferPage(result['pageKey']);
+
+            } while (param !== undefined);
+
+            return;
+
+        } else {
+
+            RunPythonScript();
+
+            return;
+        }
+    });
+}
+
+function RunPythonScript() {
+
+    console.log('Adatok írása...')
+
+    const arrayAsString = JSON.stringify(dataToWrite);
+
+    fs.writeFileSync('TransactionDatas.txt', arrayAsString);
+
+    console.log('Python szkript hívása...')
+
+    const options = {
+        mode: 'text',
+        pythonPath: pythonPath,
+        scriptPath: scriptPath,
+        pythonOptions: ['-u'],
+        args: []
+    };
+
+    PythonShell.run('test.py', options, function (err, results) {
+        if (err) throw err;
+
+        console.log('finished');
+    });
+}
+
+async function DataWrite(result, callback) {
+
     for (const tx in result['transfers']) {
 
+        i++;
+
         const transaction_item = {
+            id: i,
             BlockHexadecimal: result['transfers'][tx]['blockNum'],
             BlockDecimal: parseInt(result['transfers'][tx]['blockNum'], 16),
             TransactionHash: result['transfers'][tx]['hash']
         };
 
-        all_transactions.push(transaction_item);
+        if (printData) {
+
+            console.log(i, " T: ", result['transfers'][tx]['hash']);
+        }
+
+        dataToWrite.push(transaction_item);
     }
 
-    if (result['pageKey']) {
-
-        let param;
-
-        do {
-
-            param = await AlchemyTransferPage(result['pageKey']);
-
-        } while (param !== undefined) {
-            AlchemyTransferPage(param)
-        };
-
-        /*insertDatas(all_transactions, function (err) {
-
-            if (err) {
-                console.log("Hiba: " + err)
-            }
-
-            process.exit(0);
-        });*/
-
-    } else {
-
-        return;
-    }
+    callback();
 }
 
-async function UploadData(result) {
+function UploadData(result) {
 
-    for (const tx in result['transfers']) {
+    DataWrite(result, async function () {
 
-        const transaction_item = {
-            BlockHexadecimal: result['transfers'][tx]['blockNum'],
-            BlockDecimal: parseInt(result['transfers'][tx]['blockNum'], 16),
-            TransactionHash: result['transfers'][tx]['hash']
-        };
+        if (result['pageKey']) {
 
-        all_transactions.push(transaction_item);
-    }
+            await AlchemyTransferPage(result['pageKey']);
 
-    if (result['pageKey']) {
+            return;
 
-        await AlchemyTransferPage(result['pageKey']);
+        } else {
 
-        return;
+            return;
+        }
 
-    } else {
-
-        return;
-    }
+    });
 }
 
-AlchemyTransfer().then(result => {
+AlchemyTransfer().then(async (result) => {
 
-    console.log('Adatok lekérése SIKERES, adatok feltöltése...')
+    console.log('Adatok feltöltése...');
 
-    UploadData(result)
+    await UploadData(result);
 
 }).catch(error => {
     console.error('Hiba:', error);
 });
 
-//https://docs.alchemy.com/reference/alchemy-getassettransfers
+// npm install alchemy-sdk
+// npm i python-shell
+// https://docs.alchemy.com/reference/alchemy-getassettransfers
